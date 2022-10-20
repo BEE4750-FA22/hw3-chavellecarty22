@@ -28,21 +28,168 @@ hours = 1:24
 demand = [1517, 1486, 1544, 1733, 2058, 2470, 2628, 2696, 2653, 2591, 2626, 2714, 2803, 2842, 2891,  2821, 3017, 3074, 2957,  2487, 2249, 1933, 1684, 1563]
 wind_cf = [0.58, 0.57, 0.55, 0.28, 0.14, 0.21, 0.03, 0.04, 0.01, 0.04, 0.04, 0.01, 0.04, 0.04, 0.01, 0.01, 0.01, 0.13, 0.30, 0.45, 0.44, 0.57, 0.55, 0.58]
 solar_cf = [0, 0, 0, 0, 0, 0, 0.20, 0.57, 0.80, 0.93, 0.99, 0.99, 0.85, 0.99, 0.95, 0.81, 0.55, 0.12, 0, 0, 0, 0, 0, 0]
+
+NSECost = 1000 #$/MWh
 ```
 
 # Problem 1
 
 ## Problem 1.1
+Generator = ["Geothermal", "Coal", "CCGT", "CT", "Wind", "Solar"]
+
+Decision Variables
+
+The installed capacity (in MW) for each type of generator: 
+x[Generator]
+
+Based on capacity factors, the actual energy output (in MW) from each generator in a given time (hours):
+y[Generator,hours]
 
 ## Problem 1.2
+Our objective is to minimize the cost of the expansion plan.
+The total cost of the expansion plan will be the sum of the investment and operatng costs for each of the generators and the non-served energy cost.
+
+```math
+Geothermal Investment Cost = 457000 * x[Geothermal]\\
+Coal Investment Cost = 268000 * x[Coal])\\
+CCGT Investment Cost = 85000 * x[CCGT]\\
+CT Investment Cost = 62580 * x[CT]\\
+Wind Investment Cost = 92000 * x[Wind]\\
+Solar Investment Cost = 92000 * x[Solar]\\
+
+Total Investment = (Geothermal Investment Cost) + (Coal Investment Cost) + (CCGT Investment Cost)\\ + (CT Investment Cost) + (Wind Investment Cost) + (Solar Investment Cost)
+```
+
+Note: The Geothermal, Wind and Solar generators have no associated operating costs.
+
+```math
+Coal Operating Cost = 22 * sum(y[Coal,:]) * 8760\\
+CCGT Operating Cost = 35 * sum(y[CCGT, :]) * 8760\\
+CT Operating Cost = 45 * sum(y[CT, :]) * 8760\\
+
+Total Operating Cost = (Coal Operating Cost) + (CCGT Operating Cost) + (CT Operating Cost)\\
+```
+
+```math
+NSE Cost = NSECost * sum(nse[hours]) * 8760
+``` 
+
+Note: All costs are annual
+
+```math
+Z = Total Investment + Total Operating Cost + NSE Cost\\
+minimize(Z)
+```
 
 ## Problem 1.3
+Constraints
+
+1. Generators cannot produce more than their installed capacity: 
+
+```math
+sum(y[Geothermal, hours]) <= (0.95 * x[Geothermal]) / 365\\
+sum(y[Coal,hours]) <= x(Coal) / 365\\
+sum(y[CCGT, hours]) <= x(CCGT) / 365\\
+sum(y[CT, hours]) <= x(CT) / 365\\
+y[Wind,hours] <= CF_w[hours] * x(Wind) / 8760\\
+(y[Solar,hours] <= CF_s[hours] * x(Solar) / 8760\\
+```
+Note: Wind and Solar have capacity factors that vary depending on the time of day so that is why the constraints are considered differently.
+
+2. Energy output and installed capacity for the generators are non-negative:
+
+```math
+x[Generator)] >= 0\\
+y[Generator,hours] >= 0
+```
+
+3. Demand must be met:
+
+```math
+nse[hours] + sum(y[(:,hours]) == demand[hours]
+```
+
+My set of constraints are complete because it makes sure that demand is being met (Constraints 2 &3). I showed that the energy produced by the generators is not greater than the installed capacity, considering their capacity factors. In addition, I accounted for the fact that the capacty factors for the thermal generators are static while the capacity factors for the renewable generators are dynamic (Constraint 1).  
 
 ## Problem 1.4
+```julia
 
+using JuMP
+using HiGHS
+
+investment_cost = [457000, 268000, 85000, 62580, 92000, 92000]
+op_cost = [0, 22, 35, 45, 0, 0]
+co2_emissions = [0, 1, 0.43, 0.55, 0, 0]
+thermal_cf = [0.95, 1, 1, 1]
+
+hours = 1:24
+demand = [1517, 1486, 1544, 1733, 2058, 2470, 2628, 2696, 2653, 2591, 2626, 2714, 2803, 2842, 2891,  2821, 3017, 3074, 2957,  2487, 2249, 1933, 1684, 1563]
+wind_cf = [0.58, 0.57, 0.55, 0.28, 0.14, 0.21, 0.03, 0.04, 0.01, 0.04, 0.04, 0.01, 0.04, 0.04, 0.01, 0.01, 0.01, 0.13, 0.30, 0.45, 0.44, 0.57, 0.55, 0.58]
+solar_cf = [0, 0, 0, 0, 0, 0, 0.20, 0.57, 0.80, 0.93, 0.99, 0.99, 0.85, 0.99, 0.95, 0.81, 0.55, 0.12, 0, 0, 0, 0, 0, 0]
+
+NSECost = 1000 #$/MWh
+gencap = Model(HiGHS.Optimizer)
+generators = ["Geothermal", "Coal", "CCGT", "CT", "Wind", "Solar"]
+
+G = 1:length(generators)
+T = 1:24
+nse = 1:24
+
+#Constraint for non-negativity of the variables is built in
+@variable(gencap, x[G] >= 0)
+@variable(gencap, y[G,T] >= 0)
+
+#Note: sum([y[:,t] for t in T] returns the sum of the array of the operational costs associated with each generator based on their production. 
+@objective(gencap, Min, investment_cost'*x + sum(op_cost' .* sum(y)) + sum((sum([demand]) .- sum(y))) * NSECost)
+
+#Demand Constraint: Sum of Energy from each generator plus the non-served energy is equal to demand.
+@constraint(gencap, load[t in T], sum(y[:,t]) <= demand[t])
+
+#Capacity Constraint: Energy produced by each generator has to be less than its installed capacity.
+@constraint(gencap, thermal_avail[g in 1:4, t in T], sum(y[g,:]) <= (thermal_cf[g] * x[g]/ 365))
+@constraint(gencap, wind_avail[g = 5, t in T], y[g,:] <= (wind_cf * x[g]/ 365))
+@constraint(gencap, solar_avail[g = 6, t in T], y[g,:] <= (solar_cf * x[g]/365)) 
+
+
+print(gencap)
+
+
+```
 ## Problem 1.5
+``` julia 
+
+optimize!(gencap)
+
+
+#Total Cost
+```julia
+objective_value(gencap)
+
+#Utility Build: Installed capacity for each generator
+value.(x)
+
+#Unserved Energy
+shadow_price.(load)
+```
 
 ## Problem 1.6
+```julia 
+using Plots
+using Plots.Plotmeasures
+
+gen = value.(y).data
+p = plot(gen',
+    label=permutedims(generators),
+    xlabel = "Hour",
+    ylabel ="Generated Electricity (MW)",
+    color_palette=:seaborn_colorblind,
+    thickness_scaling=1.45, linewidth=5,
+    size=(700, 700), left_margin=5mm,
+    bottom_margin=5mm,
+    legendfontsize=14, ticksize=13,
+    guidefontsize=14)
+```
+
 
 # Problem 2
 
@@ -57,3 +204,9 @@ solar_cf = [0, 0, 0, 0, 0, 0, 0.20, 0.57, 0.80, 0.93, 0.99, 0.99, 0.85, 0.99, 0.
 ## Problem 2.5
 
 # References
+https://stackoverflow.com/questions/53076017/sum-elements-of-an-array-over-a-given-dimension
+https://discourse.julialang.org/t/sum-syntax/14589
+https://stackoverflow.com/questions/31944602/how-to-do-for-all-in-sum-notation-in-julia-jump
+https://discourse.julialang.org/t/problem-extracting-a-row-from-an-array-returns-a-column/37331
+https://stackoverflow.com/questions/26769162/convert-julia-array-to-dataframe
+https://discourse.julialang.org/t/problem-using-margin-on-plots/16226/3
